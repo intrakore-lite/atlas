@@ -344,3 +344,19 @@ class TestCargoProxyRoute(UnitTestCase):
 			self.provisioner.update_proxy_routes()
 
 		request.assert_not_called()
+
+
+class TestCargoSource(UnitTestCase):
+	def test_installer_defaults_apply_without_site_config(self) -> None:
+		with patch.dict(provisioning.frappe.conf, {}, clear=False):
+			provisioning.frappe.conf.pop("cargo_repo", None)
+			provisioning.frappe.conf.pop("cargo_branch", None)
+			self.assertEqual(provisioning.get_cargo_source(), {})
+
+	def test_site_config_names_the_cargo_fork(self) -> None:
+		conf = {"cargo_repo": "https://github.com/example/cargo", "cargo_branch": "main"}
+		with patch.dict(provisioning.frappe.conf, conf):
+			self.assertEqual(
+				provisioning.get_cargo_source(),
+				{"REPO": "https://github.com/example/cargo", "BRANCH": "main"},
+			)

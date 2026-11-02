@@ -180,6 +180,7 @@ class CargoServerProvisioner:
 			"WILDCARD_DOMAIN": settings.wildcard_domain,
 			"DEFAULT_STORAGE_CLUSTER_CONFIG": storage_cluster_config_json(),
 			"DEFAULT_TELEMETRY_CONFIG": telemetry_config_json(),
+			**get_cargo_source(),
 		}
 
 	def update_proxy_routes(self) -> None:
@@ -243,6 +244,20 @@ class CargoServerProvisioner:
 	def save(self) -> None:
 		"""Store the current Cargo Server state."""
 		self.cargo_server.save(ignore_permissions=True)
+
+
+def get_cargo_source() -> dict[str, str]:
+	"""Return the Cargo repository and branch that site config names.
+
+	A region that runs its own Cargo fork sets `cargo_repo` and `cargo_branch`. Without them the
+	installer keeps its own defaults.
+	"""
+	source = {}
+	if repo := frappe.conf.get("cargo_repo"):
+		source["REPO"] = repo
+	if branch := frappe.conf.get("cargo_branch"):
+		source["BRANCH"] = branch
+	return source
 
 
 def generate_installer_password() -> str:
