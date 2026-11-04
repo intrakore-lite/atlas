@@ -320,8 +320,11 @@ func imageVolumeSizeMiB(sizeBytes int64) int64 {
 	return (sizeBytes + (1 << bytesToMiBShift) - 1) >> bytesToMiBShift
 }
 
+// open creates a sparse volume. The import writes it once, and VM disks are clones of
+// its snapshot, so nothing writes it later. A full reservation holds the whole volume
+// size in the pool for each cached image, and that space is never used.
 func (destination *volumeDestination) open(ctx context.Context, sizeBytes int64) (io.Writer, error) {
-	if err := platform.Run(ctx, "zfs", "create", "-V", fmt.Sprintf("%dM", imageVolumeSizeMiB(sizeBytes)), "-o", "volblocksize="+imageVolumeBlockSize, destination.dataset); err != nil {
+	if err := platform.Run(ctx, "zfs", "create", "-s", "-V", fmt.Sprintf("%dM", imageVolumeSizeMiB(sizeBytes)), "-o", "volblocksize="+imageVolumeBlockSize, destination.dataset); err != nil {
 		return nil, err
 	}
 	devicePath := "/dev/zvol/" + destination.dataset
