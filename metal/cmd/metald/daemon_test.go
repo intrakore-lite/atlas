@@ -58,7 +58,7 @@ type fakeHTTPServer struct {
 	stopped    chan struct{}
 }
 
-func (server *fakeHTTPServer) Start(string) error {
+func (server *fakeHTTPServer) Serve() error {
 	if server.startError != nil {
 		return server.startError
 	}
