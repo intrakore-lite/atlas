@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"syscall"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"github.com/frappe/atlas/metal/internal/network"
 	"github.com/frappe/atlas/metal/internal/storage"
@@ -42,8 +42,8 @@ func (err *apiError) Error() string {
 }
 
 // errorHandler writes the public error and logs the cause of a server fault.
-func errorHandler(err error, c echo.Context) {
-	if c.Response().Committed {
+func errorHandler(c *echo.Context, err error) {
+	if response, _ := echo.UnwrapResponse(c.Response()); response != nil && response.Committed {
 		return
 	}
 
@@ -99,9 +99,11 @@ func publicAPIError(err error) *apiError {
 		return newAPIError(http.StatusInsufficientStorage, "host_storage_full", "host storage is full")
 	}
 
-	var httpError *echo.HTTPError
-	if errors.As(err, &httpError) {
-		return newAPIError(httpError.Code, statusCode(httpError.Code), http.StatusText(httpError.Code))
+	// Echo routing errors (not found, method not allowed) and handler HTTP errors carry a status.
+	var statusCoder echo.HTTPStatusCoder
+	if errors.As(err, &statusCoder) && statusCoder.StatusCode() != 0 {
+		status := statusCoder.StatusCode()
+		return newAPIError(status, statusCode(status), http.StatusText(status))
 	}
 	return newAPIError(http.StatusInternalServerError, "internal_error", "internal server error")
 }

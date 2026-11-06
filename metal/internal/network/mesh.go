@@ -50,6 +50,9 @@ type Mesh struct {
 	wireGuardStatePath string
 	controllerAddress  string
 
+	// procSysPath is the root of the kernel settings, /proc/sys on a host.
+	procSysPath string
+
 	// A sync walks the whole route map, so unchanged registrations are cached.
 	registrationMutex sync.Mutex
 	registrations     map[string]string
@@ -79,6 +82,7 @@ func NewMesh(configuration MeshConfig) (*Mesh, error) {
 		wireGuardName:      configuration.WireGuardName,
 		wireGuardStatePath: configuration.WireGuardStatePath,
 		controllerAddress:  configuration.ControllerAddress,
+		procSysPath:        "/proc/sys",
 		registrations:      make(map[string]string),
 	}, nil
 }
@@ -129,16 +133,57 @@ func (mesh *Mesh) EnsureHost(ctx context.Context) error {
 		"--uplink", mesh.uplinkName, "--wireguard", mesh.wireGuardName, "--controller", mesh.controllerAddress)
 }
 
-// EnsureHooks configures the host again when an interface restart removed a
-// mesh hook. Restarting wg0 or the uplink deletes its tc filters.
+// EnsureHooks configures the host again when an interface restart removed
+// mesh state. Restarting wg0 or the uplink deletes its tc filters. Restarting
+// systemd-networkd, which a systemd package upgrade does, also resets
+// proxy_ndp on the uplink and deletes the mesh route as a foreign route.
+// Without proxy NDP the host stops answering lookups for its VMs, so VMs on
+// other hosts can no longer reach them.
 func (mesh *Mesh) EnsureHooks(ctx context.Context) error {
+	if mesh.hostStateIntact(ctx) {
+		return nil
+	}
+	if err := mesh.EnsureHost(ctx); err != nil {
+		return err
+	}
+	// A link reconfiguration can also flush the proxy NDP entries of local
+	// VMs, so every VM syncs again at its next reconcile.
+	mesh.forgetAllRegistrations()
+	return nil
+}
+
+// hostStateIntact reports whether the hooks, the uplink proxy NDP setting and
+// the mesh route that configure sets are all still in place.
+func (mesh *Mesh) hostStateIntact(ctx context.Context) bool {
+	var hookOutputs []string
 	for _, interfaceName := range []string{mesh.wireGuardName, mesh.uplinkName} {
 		output, err := platform.Output(ctx, "tc", "filter", "show", "dev", interfaceName, "ingress")
-		if err != nil || !strings.Contains(output, "handle 0x1") {
-			return mesh.EnsureHost(ctx)
+		if err != nil {
+			return false
+		}
+		hookOutputs = append(hookOutputs, output)
+	}
+	// Read procfs directly because sysctl treats a dot in a VLAN name as a separator.
+	proxyNDP, err := os.ReadFile(mesh.procSysPath + "/net/ipv6/conf/" + mesh.uplinkName + "/proxy_ndp")
+	if err != nil {
+		return false
+	}
+	route, err := platform.Output(ctx, "ip", "-6", "route", "show", meshPrefix, "dev", mesh.uplinkName)
+	if err != nil {
+		return false
+	}
+	return meshHostStateIntact(hookOutputs, string(proxyNDP), route)
+}
+
+// meshHostStateIntact checks the tc filter listings of wg0 and the uplink, the
+// uplink proxy_ndp value and the listing of the mesh route on the uplink.
+func meshHostStateIntact(hookOutputs []string, proxyNDP, route string) bool {
+	for _, output := range hookOutputs {
+		if !strings.Contains(output, "handle 0x1") {
+			return false
 		}
 	}
-	return nil
+	return strings.TrimSpace(proxyNDP) == "1" && strings.TrimSpace(route) != ""
 }
 
 // removeVM unregisters one VM address. An address this host does not own is not an error.
@@ -228,6 +273,13 @@ func (mesh *Mesh) registerVM(ctx context.Context, address, interfaceIndex string
 	defer mesh.registrationMutex.Unlock()
 	mesh.registrations[address] = requestedState
 	return nil
+}
+
+// forgetAllRegistrations makes the next reconcile sync every VM again.
+func (mesh *Mesh) forgetAllRegistrations() {
+	mesh.registrationMutex.Lock()
+	defer mesh.registrationMutex.Unlock()
+	clear(mesh.registrations)
 }
 
 func (mesh *Mesh) forgetRegistration(address string) {

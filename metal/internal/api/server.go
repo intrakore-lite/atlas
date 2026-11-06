@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 
 	"github.com/frappe/atlas/metal/internal/console"
 	"github.com/frappe/atlas/metal/internal/host"
@@ -118,8 +119,47 @@ type Server struct {
 	consoleShutdown context.Context
 }
 
+// Router is the API router, with the hooks that run when its HTTP server stops.
+type Router struct {
+	*echo.Echo
+	onShutdown []func()
+}
+
+// HTTPServer serves a Router on a listener that the caller opened.
+type HTTPServer struct {
+	server   *http.Server
+	listener net.Listener
+}
+
+// Serve returns an HTTP server for the router on listener. It starts only when Serve is called.
+func (router *Router) Serve(listener net.Listener) *HTTPServer {
+	server := &http.Server{Handler: router.Echo, ReadHeaderTimeout: readHeaderTimeout}
+	for _, hook := range router.onShutdown {
+		server.RegisterOnShutdown(hook)
+	}
+	return &HTTPServer{server: server, listener: listener}
+}
+
+// Serve accepts connections until the server is shut down or closed.
+func (server *HTTPServer) Serve() error {
+	return server.server.Serve(server.listener)
+}
+
+// Shutdown stops accepting connections and waits for open requests to finish.
+func (server *HTTPServer) Shutdown(ctx context.Context) error {
+	return server.server.Shutdown(ctx)
+}
+
+// Close stops the server at once.
+func (server *HTTPServer) Close() error {
+	return server.server.Close()
+}
+
+// readHeaderTimeout bounds a slow client that never finishes its request headers.
+const readHeaderTimeout = 10 * time.Second
+
 // New builds the HTTP router from explicit configuration and dependencies.
-func New(configuration Config, dependencies Dependencies) (*echo.Echo, error) {
+func New(configuration Config, dependencies Dependencies) (*Router, error) {
 	if err := validateServerConfiguration(configuration, dependencies); err != nil {
 		return nil, err
 	}
@@ -143,8 +183,6 @@ func New(configuration Config, dependencies Dependencies) (*echo.Echo, error) {
 	router := echo.New()
 	var stopConsoles context.CancelFunc
 	server.consoleShutdown, stopConsoles = context.WithCancel(context.Background())
-	router.Server.RegisterOnShutdown(stopConsoles)
-	router.HideBanner = true
 	router.HTTPErrorHandler = errorHandler
 
 	// Correlation runs first, so every log line and error carries the same IDs.
@@ -152,12 +190,12 @@ func New(configuration Config, dependencies Dependencies) (*echo.Echo, error) {
 	router.Use(server.logRequest)
 	server.registerRoutes(router)
 
-	return router, nil
+	return &Router{Echo: router, onShutdown: []func(){stopConsoles}}, nil
 }
 
 // NewCoordination builds the mutual-TLS router used between Metal nodes.
 // The listener enforces the client certificate before a request reaches it.
-func NewCoordination(logger *slog.Logger, registry *telemetry.Registry, migrationManager MigrationManager) (*echo.Echo, error) {
+func NewCoordination(logger *slog.Logger, registry *telemetry.Registry, migrationManager MigrationManager) (*Router, error) {
 	if migrationManager == nil || registry == nil {
 		return nil, fmt.Errorf("migration manager and telemetry registry are required")
 	}
@@ -166,23 +204,25 @@ func NewCoordination(logger *slog.Logger, registry *telemetry.Registry, migratio
 	}
 	server := &Server{migrationManager: migrationManager, logger: logger, telemetry: registry}
 	router := echo.New()
-	router.HideBanner = true
 	router.HTTPErrorHandler = errorHandler
 	router.Use(correlationMiddleware)
 	router.Use(server.logRequest)
 	server.registerCoordinationRoutes(router)
-	return router, nil
+	return &Router{Echo: router}, nil
 }
 
 // Frequent host syncs are counted without latency observations.
 func (s *Server) logRequest(next echo.HandlerFunc) echo.HandlerFunc {
-	return func(c echo.Context) error {
+	return func(c *echo.Context) error {
 		c.Set("logger", s.logger)
 		startedAt := time.Now()
 
 		err := next(c)
 		duration := time.Since(startedAt)
-		status := c.Response().Status
+		status := http.StatusOK
+		if response, _ := echo.UnwrapResponse(c.Response()); response != nil && response.Status != 0 {
+			status = response.Status
+		}
 		if err != nil {
 			status = publicAPIError(err).status
 		}

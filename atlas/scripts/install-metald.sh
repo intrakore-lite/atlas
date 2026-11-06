@@ -303,6 +303,24 @@ ip link set "$MESH_UPLINK_INTERFACE" allmulticast on
 EOF
 chmod 0755 /usr/local/lib/metal/network-setup
 
+# A systemd-networkd restart, which a systemd package upgrade does, resets
+# proxy_ndp on the uplink and deletes the WG Mesh route as a foreign route.
+# The host then stops answering lookups for its VMs. Keep both across a
+# restart; metald also repairs them at each host sync.
+install -d -m 0755 /etc/systemd/networkd.conf.d
+cat > /etc/systemd/networkd.conf.d/50-atlas-wg-mesh.conf <<EOF
+[Network]
+ManageForeignRoutes=no
+EOF
+for network_file in /run/systemd/network/*-"$MESH_UPLINK_INTERFACE".network /etc/systemd/network/*-"$MESH_UPLINK_INTERFACE".network; do
+	[ -e "$network_file" ] || continue
+	install -d -m 0755 "/etc/systemd/network/$(basename "$network_file").d"
+	cat > "/etc/systemd/network/$(basename "$network_file").d/50-atlas-wg-mesh.conf" <<EOF
+[Network]
+IPv6ProxyNDP=yes
+EOF
+done
+
 
 step "systemd units"
 cat > /etc/systemd/system/metal.service <<EOF

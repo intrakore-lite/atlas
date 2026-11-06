@@ -455,7 +455,7 @@ func serve(options options, logger *slog.Logger) (serveError error) {
 		reconciler.MigrationConfig{Logger: logger, Telemetry: registry},
 	)
 	daemon.OwnMigrations(migrationManager)
-	coordinationServer, err := api.NewCoordination(logger, registry, migrationManager)
+	coordinationRouter, err := api.NewCoordination(logger, registry, migrationManager)
 	if err != nil {
 		return fmt.Errorf("configure coordination API: %w", err)
 	}
@@ -468,7 +468,7 @@ func serve(options options, logger *slog.Logger) (serveError error) {
 	if versions.FirecrackerVersion, err = options.cfg.FirecrackerVersion(daemonContext); err != nil {
 		logger.Warn("could not read the Firecracker version", "error", err)
 	}
-	server, err := api.New(api.Config{Logger: logger, Telemetry: registry, Versions: versions}, api.Dependencies{
+	router, err := api.New(api.Config{Logger: logger, Telemetry: registry, Versions: versions}, api.Dependencies{
 		VirtualMachineManager: virtualMachineManager,
 		MigrationManager:      migrationManager,
 		SnapshotStore:         stores.Snapshots,
@@ -483,8 +483,8 @@ func serve(options options, logger *slog.Logger) (serveError error) {
 
 	// Start workers and serve the API.
 	logger.Info("metald listening", "version", version, "address", options.listen)
-	server.Listener = tls.NewListener(listener, tlsConfigurations.api)
-	coordinationServer.Listener = tls.NewListener(coordinationListener, tlsConfigurations.coordination)
+	server := router.Serve(tls.NewListener(listener, tlsConfigurations.api))
+	coordinationServer := coordinationRouter.Serve(tls.NewListener(coordinationListener, tlsConfigurations.coordination))
 	daemon.StartWorker(platform.RunWatchdog)
 	daemon.StartWorker(virtualMachineReconciler.Run)
 	daemon.StartWorker(sleepTransferReconciler.Run)

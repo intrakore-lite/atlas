@@ -18,7 +18,7 @@ import (
 const gracefulShutdownTimeout = 30 * time.Second
 
 type daemonHTTPServer interface {
-	Start(address string) error
+	Serve() error
 	Shutdown(context.Context) error
 }
 
@@ -123,7 +123,7 @@ func (daemon *daemon) Serve(servers ...daemonHTTPServer) error {
 	daemon.httpServers = servers
 	daemon.httpServerErrors = make(chan error, len(servers))
 	for _, server := range servers {
-		go func() { daemon.httpServerErrors <- server.Start("") }()
+		go func() { daemon.httpServerErrors <- server.Serve() }()
 	}
 
 	signalContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

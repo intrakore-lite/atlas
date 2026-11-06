@@ -202,3 +202,36 @@ func TestARemovedVMSyncsAgainWhenItReturns(t *testing.T) {
 		t.Fatalf("calls = %d, want sync, remove, sync", calls)
 	}
 }
+
+func TestMeshHostStateIntactFindsEachKindOfDrift(t *testing.T) {
+	hooks := []string{"filter protocol all pref 10 bpf chain 0 handle 0x1 handle_wireguard_packet", "filter protocol all pref 10 bpf chain 0 handle 0x1 handle_uplink_ingress"}
+	route := "fdaa::/16 metric 1024 pref medium\n"
+	if !meshHostStateIntact(hooks, "1\n", route) {
+		t.Fatal("reported drift on an intact host")
+	}
+	for name, intact := range map[string]bool{
+		"missing hook":      meshHostStateIntact([]string{hooks[0], ""}, "1\n", route),
+		"proxy NDP off":     meshHostStateIntact(hooks, "0\n", route),
+		"mesh route absent": meshHostStateIntact(hooks, "1\n", ""),
+	} {
+		if intact {
+			t.Errorf("did not report drift with %s", name)
+		}
+	}
+}
+
+func TestForgetAllRegistrationsMakesEveryVMSyncAgain(t *testing.T) {
+	mesh, err := NewMesh(MeshConfig{
+		CommandPath: stubMeshCommand(t), WireGuardName: "wg0", UplinkName: "enp39s0",
+		WireGuardStatePath: "/var/lib/metal/wireguard-peers.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mesh.registrations["fdaa:1::1"] = "7"
+	mesh.registrations["fdaa:1:0:14::1"] = "9"
+	mesh.forgetAllRegistrations()
+	if len(mesh.registrations) != 0 {
+		t.Fatalf("registrations = %v, want none", mesh.registrations)
+	}
+}
